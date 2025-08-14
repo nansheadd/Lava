@@ -1,0 +1,14 @@
+:root { --lava-red:#CF1020; --lava-black:#111112; --lava-white:#ffffff; }
+*{box-sizing:border-box} html,body,#root{height:100%}
+body{margin:0;font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Arial;background:var(--lava-white);color:#111}
+.header{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid #e5e7eb;background:#fff}
+.brand{font-weight:800;letter-spacing:.5px;font-size:20px}.brand .dot{color:var(--lava-red)}
+.container{max-width:960px;margin:24px auto;padding:0 16px}
+.card{background:#fff;border:1px solid #e5e7eb;border-radius:16px;padding:20px;box-shadow:0 6px 24px rgba(0,0,0,.05)}
+.button{background:var(--lava-red);color:#fff;border:none;padding:10px 14px;border-radius:12px;font-weight:600;cursor:pointer}
+.button[disabled]{opacity:.6;cursor:not-allowed}
+.tabs{display:flex;gap:8px;margin-top:16px}
+.tab{padding:8px 12px;border:1px solid #e5e7eb;border-radius:10px;cursor:pointer;background:#fff}
+.tab.active{border-color:var(--lava-red);color:var(--lava-red)}
+textarea{width:100%;min-height:300px;padding:12px;border:1px solid #e5e7eb;border-radius:12px}
+.footer{color:#6b7280;font-size:12px;margin-top:24px;text-align:center}
