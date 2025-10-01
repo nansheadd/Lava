@@ -25,6 +25,16 @@ type WordpressExportResponse = {
   error?: string
 }
 
+type WordpressSubscriptionsResponse = {
+  base_url?: string
+  baseUrl?: string
+  admin_path?: string
+  adminPath?: string
+  html?: string
+  message?: string
+  error?: string
+}
+
 function extractTitle(markdown: string) {
   const lines = markdown.split(/\r?\n/)
   for (const line of lines) {
@@ -55,7 +65,8 @@ export default function App() {
   const [error, setError] = useState('')
   const [wpUrl, setWpUrl] = useState('')
   const [wpUsername, setWpUsername] = useState('')
-  const [wpPassword, setWpPassword] = useState('')
+  const [wpAppPassword, setWpAppPassword] = useState('')
+  const [wpAdminPassword, setWpAdminPassword] = useState('')
   const [wpTesting, setWpTesting] = useState(false)
   const [wpConnected, setWpConnected] = useState(false)
   const [wpMessage, setWpMessage] = useState('')
@@ -70,18 +81,38 @@ export default function App() {
   const [exportBusy, setExportBusy] = useState(false)
   const [exportMessage, setExportMessage] = useState('')
   const [exportError, setExportError] = useState('')
+  const [subscriptionsBusy, setSubscriptionsBusy] = useState(false)
+  const [subscriptionsMessage, setSubscriptionsMessage] = useState('')
+  const [subscriptionsError, setSubscriptionsError] = useState('')
+  const [subscriptionsUrl, setSubscriptionsUrl] = useState('')
+  const [subscriptionsHtml, setSubscriptionsHtml] = useState('')
 
   const backend = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
-  function buildWordpressPayload() {
+  const normalisedWpUrl = wpUrl.trim()
+
+  function buildWordpressApiPayload() {
+    const password = wpAppPassword || wpAdminPassword
     return {
-      siteUrl: wpUrl,
-      url: wpUrl,
-      baseUrl: wpUrl,
+      siteUrl: normalisedWpUrl,
+      url: normalisedWpUrl,
+      baseUrl: normalisedWpUrl,
       username: wpUsername,
       user: wpUsername,
-      applicationPassword: wpPassword,
-      password: wpPassword,
+      applicationPassword: wpAppPassword || undefined,
+      password: password || undefined,
+    }
+  }
+
+  function buildWordpressAdminPayload() {
+    const password = wpAdminPassword || wpAppPassword
+    return {
+      siteUrl: normalisedWpUrl,
+      url: normalisedWpUrl,
+      baseUrl: normalisedWpUrl,
+      username: wpUsername,
+      user: wpUsername,
+      password: password || undefined,
     }
   }
 
@@ -151,11 +182,15 @@ export default function App() {
     setWpError('')
     setExportMessage('')
     setExportError('')
-  }, [wpUrl, wpUsername, wpPassword])
+    setSubscriptionsMessage('')
+    setSubscriptionsError('')
+    setSubscriptionsHtml('')
+    setSubscriptionsUrl('')
+  }, [wpUrl, wpUsername, wpAppPassword, wpAdminPassword])
 
   async function testWordpressConnection() {
-    if (!wpUrl || !wpUsername || !wpPassword) {
-      setWpError('Veuillez renseigner l\'URL, l\'identifiant et le mot de passe.')
+    if (!wpUrl || !wpUsername || (!wpAppPassword && !wpAdminPassword)) {
+      setWpError('Veuillez renseigner l\'URL, l\'identifiant et un mot de passe ou application password.')
       setWpMessage('')
       return
     }
@@ -166,7 +201,7 @@ export default function App() {
     setWpError('')
 
     try {
-      const payload = buildWordpressPayload()
+      const payload = buildWordpressApiPayload()
 
       const res = await fetch(`${backend}/wordpress/connect`, {
         method: 'POST',
@@ -199,8 +234,8 @@ export default function App() {
       return
     }
 
-    if (!wpUrl || !wpUsername || !wpPassword) {
-      setPublishError('Veuillez renseigner les informations de connexion WordPress.')
+    if (!wpUrl || !wpUsername || (!wpAppPassword && !wpAdminPassword)) {
+      setPublishError('Veuillez renseigner les informations de connexion WordPress (identifiant + mot de passe ou application password).')
       setPublishMessage('')
       return
     }
@@ -211,7 +246,7 @@ export default function App() {
 
     try {
       const payload: Record<string, unknown> = {
-        ...buildWordpressPayload(),
+        ...buildWordpressApiPayload(),
         title: postTitle,
         status: postStatus,
         markdown: md,
@@ -251,8 +286,8 @@ export default function App() {
   }
 
   async function exportSubscriptions() {
-    if (!wpUrl || !wpUsername || !wpPassword) {
-      setExportError('Veuillez renseigner les informations de connexion WordPress.')
+    if (!wpUrl || !wpUsername || (!wpAdminPassword && !wpAppPassword)) {
+      setExportError('Veuillez renseigner l\'URL, l\'identifiant et votre mot de passe WordPress.')
       setExportMessage('')
       return
     }
@@ -262,7 +297,7 @@ export default function App() {
     setExportError('')
 
     try {
-      const payload = buildWordpressPayload()
+      const payload = buildWordpressAdminPayload()
       const res = await fetch(`${backend}/wordpress/subscriptions/export`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -286,6 +321,62 @@ export default function App() {
       setExportError(e?.message || 'Impossible d\'exporter les abonnements WooCommerce.')
     } finally {
       setExportBusy(false)
+    }
+  }
+
+  async function fetchSubscriptionsPreview() {
+    if (!wpUrl || !wpUsername || (!wpAdminPassword && !wpAppPassword)) {
+      setSubscriptionsError('Veuillez renseigner l\'URL, l\'identifiant et votre mot de passe WordPress.')
+      setSubscriptionsMessage('')
+      setSubscriptionsHtml('')
+      setSubscriptionsUrl('')
+      return
+    }
+
+    setSubscriptionsBusy(true)
+    setSubscriptionsMessage('')
+    setSubscriptionsError('')
+    setSubscriptionsHtml('')
+    setSubscriptionsUrl('')
+
+    try {
+      const res = await fetch(`${backend}/wordpress/subscriptions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          base_url: normalisedWpUrl,
+          username: wpUsername,
+          password: wpAdminPassword || wpAppPassword,
+        }),
+      })
+
+      let data: WordpressSubscriptionsResponse | null = null
+      try {
+        data = await res.json()
+      } catch {}
+
+      if (!res.ok || !data) {
+        throw new Error(data?.message || data?.error || 'Récupération échouée')
+      }
+
+      const base = data.base_url || data.baseUrl || normalisedWpUrl
+      const adminPath = data.admin_path || data.adminPath
+      let targetUrl = base
+      if (adminPath) {
+        try {
+          targetUrl = new URL(adminPath, base).toString()
+        } catch {
+          const separator = base.endsWith('/') ? '' : '/'
+          targetUrl = `${base}${separator}${adminPath}`
+        }
+      }
+      setSubscriptionsUrl(targetUrl)
+      setSubscriptionsHtml(data.html || '')
+      setSubscriptionsMessage('Page d\'abonnements récupérée avec succès.')
+    } catch (e: any) {
+      setSubscriptionsError(e?.message || 'Impossible de récupérer la page des abonnements WooCommerce.')
+    } finally {
+      setSubscriptionsBusy(false)
     }
   }
 
@@ -346,12 +437,22 @@ export default function App() {
               />
             </label>
             <label className="field">
-              <span>Mot de passe / Application password</span>
+              <span>Application password (API)</span>
               <input
                 type="password"
-                placeholder="Mot de passe application"
-                value={wpPassword}
-                onChange={(e) => setWpPassword(e.target.value)}
+                placeholder="xxxx xxxx xxxx xxxx"
+                value={wpAppPassword}
+                onChange={(e) => setWpAppPassword(e.target.value)}
+                autoComplete="current-password"
+              />
+            </label>
+            <label className="field">
+              <span>Mot de passe admin WordPress</span>
+              <input
+                type="password"
+                placeholder="Mot de passe WordPress"
+                value={wpAdminPassword}
+                onChange={(e) => setWpAdminPassword(e.target.value)}
                 autoComplete="current-password"
               />
             </label>
@@ -431,6 +532,31 @@ export default function App() {
 
           {exportMessage && <p className="status success" style={{marginTop:12}}>{exportMessage}</p>}
           {exportError && <p className="status error" style={{marginTop:12}}>{exportError}</p>}
+
+          <button
+            className="button outline"
+            onClick={fetchSubscriptionsPreview}
+            disabled={subscriptionsBusy}
+            style={{marginTop: 12}}
+          >
+            {subscriptionsBusy ? 'Chargement…' : 'Voir la page des abonnements'}
+          </button>
+
+          {subscriptionsMessage && <p className="status success" style={{marginTop:12}}>{subscriptionsMessage}</p>}
+          {subscriptionsError && <p className="status error" style={{marginTop:12}}>{subscriptionsError}</p>}
+
+          {subscriptionsUrl && (
+            <p className="status" style={{marginTop:12}}>
+              <a href={subscriptionsUrl} target="_blank" rel="noreferrer">Ouvrir la page dans WordPress</a>
+            </p>
+          )}
+
+          {subscriptionsHtml && (
+            <details className="subscriptions-preview" style={{marginTop:12}}>
+              <summary>Aperçu HTML de la page</summary>
+              <div dangerouslySetInnerHTML={{ __html: subscriptionsHtml }} />
+            </details>
+          )}
         </div>
       </main>
     </>
