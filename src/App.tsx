@@ -17,6 +17,14 @@ type WordpressResponse = {
   postId?: number
 }
 
+type WordpressExportResponse = {
+  filename?: string
+  contentType?: string
+  data: string
+  message?: string
+  error?: string
+}
+
 function extractTitle(markdown: string) {
   const lines = markdown.split(/\r?\n/)
   for (const line of lines) {
@@ -59,8 +67,40 @@ export default function App() {
   const [publishMessage, setPublishMessage] = useState('')
   const [publishError, setPublishError] = useState('')
   const [slugTouched, setSlugTouched] = useState(false)
+  const [exportBusy, setExportBusy] = useState(false)
+  const [exportMessage, setExportMessage] = useState('')
+  const [exportError, setExportError] = useState('')
 
   const backend = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+
+  function buildWordpressPayload() {
+    return {
+      siteUrl: wpUrl,
+      url: wpUrl,
+      baseUrl: wpUrl,
+      username: wpUsername,
+      user: wpUsername,
+      applicationPassword: wpPassword,
+      password: wpPassword,
+    }
+  }
+
+  function downloadBase64File(base64Data: string, filename: string, contentType?: string) {
+    const byteCharacters = atob(base64Data)
+    const byteNumbers = new Array(byteCharacters.length)
+    for (let i = 0; i < byteCharacters.length; i++) {
+      byteNumbers[i] = byteCharacters.charCodeAt(i)
+    }
+    const byteArray = new Uint8Array(byteNumbers)
+    const blob = new Blob([byteArray], { type: contentType || 'application/octet-stream' })
+    const link = document.createElement('a')
+    link.href = URL.createObjectURL(blob)
+    link.download = filename
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(link.href)
+  }
 
   async function handleFileInput(file: File) {
     setBusy(true); setError('')
@@ -109,6 +149,8 @@ export default function App() {
     setWpConnected(false)
     setWpMessage('')
     setWpError('')
+    setExportMessage('')
+    setExportError('')
   }, [wpUrl, wpUsername, wpPassword])
 
   async function testWordpressConnection() {
@@ -124,15 +166,7 @@ export default function App() {
     setWpError('')
 
     try {
-      const payload = {
-        siteUrl: wpUrl,
-        url: wpUrl,
-        baseUrl: wpUrl,
-        username: wpUsername,
-        user: wpUsername,
-        applicationPassword: wpPassword,
-        password: wpPassword,
-      }
+      const payload = buildWordpressPayload()
 
       const res = await fetch(`${backend}/wordpress/connect`, {
         method: 'POST',
@@ -177,13 +211,7 @@ export default function App() {
 
     try {
       const payload: Record<string, unknown> = {
-        siteUrl: wpUrl,
-        url: wpUrl,
-        baseUrl: wpUrl,
-        username: wpUsername,
-        user: wpUsername,
-        applicationPassword: wpPassword,
-        password: wpPassword,
+        ...buildWordpressPayload(),
         title: postTitle,
         status: postStatus,
         markdown: md,
@@ -219,6 +247,45 @@ export default function App() {
       setPublishError(e?.message || 'Impossible de publier sur WordPress.')
     } finally {
       setPublishBusy(false)
+    }
+  }
+
+  async function exportSubscriptions() {
+    if (!wpUrl || !wpUsername || !wpPassword) {
+      setExportError('Veuillez renseigner les informations de connexion WordPress.')
+      setExportMessage('')
+      return
+    }
+
+    setExportBusy(true)
+    setExportMessage('')
+    setExportError('')
+
+    try {
+      const payload = buildWordpressPayload()
+      const res = await fetch(`${backend}/wordpress/subscriptions/export`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+
+      let data: WordpressExportResponse | null = null
+      try {
+        data = await res.json()
+      } catch {}
+
+      if (!res.ok || !data || !data.data) {
+        throw new Error(data?.message || data?.error || 'Export échoué')
+      }
+
+      const filename = data.filename || 'woocommerce-subscriptions.csv'
+      const contentType = data.contentType || 'text/csv'
+      downloadBase64File(data.data, filename, contentType)
+      setExportMessage(`Export téléchargé : ${filename}`)
+    } catch (e: any) {
+      setExportError(e?.message || 'Impossible d\'exporter les abonnements WooCommerce.')
+    } finally {
+      setExportBusy(false)
     }
   }
 
@@ -347,6 +414,23 @@ export default function App() {
 
           {publishMessage && <p className="status success" style={{marginTop:12}}>{publishMessage}</p>}
           {publishError && <p className="status error" style={{marginTop:12}}>{publishError}</p>}
+
+          <hr className="divider" />
+
+          <h3 className="section-subtitle">Export des abonnements WooCommerce</h3>
+          <p style={{marginTop:0}}>Téléchargez le CSV des abonnements directement depuis votre site.</p>
+
+          <button
+            className="button outline"
+            onClick={exportSubscriptions}
+            disabled={exportBusy}
+            style={{marginTop: 12}}
+          >
+            {exportBusy ? 'Export en cours…' : 'Exporter les abonnements'}
+          </button>
+
+          {exportMessage && <p className="status success" style={{marginTop:12}}>{exportMessage}</p>}
+          {exportError && <p className="status error" style={{marginTop:12}}>{exportError}</p>}
         </div>
       </main>
     </>
