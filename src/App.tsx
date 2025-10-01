@@ -15,6 +15,9 @@ type WordpressResponse = {
   url?: string
   permalink?: string
   postId?: number
+  status?: string
+  username?: string
+  displayName?: string
 }
 
 type WordpressExportResponse = {
@@ -105,14 +108,13 @@ export default function App() {
   }
 
   function buildWordpressAdminPayload() {
-    const password = wpAdminPassword || wpAppPassword
     return {
       siteUrl: normalisedWpUrl,
       url: normalisedWpUrl,
       baseUrl: normalisedWpUrl,
       username: wpUsername,
       user: wpUsername,
-      password: password || undefined,
+      password: wpAdminPassword || undefined,
     }
   }
 
@@ -286,8 +288,8 @@ export default function App() {
   }
 
   async function exportSubscriptions() {
-    if (!wpUrl || !wpUsername || (!wpAdminPassword && !wpAppPassword)) {
-      setExportError('Veuillez renseigner l\'URL, l\'identifiant et votre mot de passe WordPress.')
+    if (!wpUrl || !wpUsername || !wpAdminPassword) {
+      setExportError('Veuillez renseigner l\'URL, l\'identifiant et votre mot de passe WordPress (non application password).')
       setExportMessage('')
       return
     }
@@ -325,8 +327,8 @@ export default function App() {
   }
 
   async function fetchSubscriptionsPreview() {
-    if (!wpUrl || !wpUsername || (!wpAdminPassword && !wpAppPassword)) {
-      setSubscriptionsError('Veuillez renseigner l\'URL, l\'identifiant et votre mot de passe WordPress.')
+    if (!wpUrl || !wpUsername || !wpAdminPassword) {
+      setSubscriptionsError('Veuillez renseigner l\'URL, l\'identifiant et votre mot de passe WordPress (non application password).')
       setSubscriptionsMessage('')
       setSubscriptionsHtml('')
       setSubscriptionsUrl('')
@@ -346,7 +348,7 @@ export default function App() {
         body: JSON.stringify({
           base_url: normalisedWpUrl,
           username: wpUsername,
-          password: wpAdminPassword || wpAppPassword,
+          password: wpAdminPassword,
         }),
       })
 
