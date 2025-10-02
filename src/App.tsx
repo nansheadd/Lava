@@ -4,13 +4,14 @@ type ConvertResponse = {
   markdown: string
   html: string
   engine: string
-  stats: Record<string, any>
+  stats: Record<string, unknown>
 }
 
 type WordpressResponse = {
   success?: boolean
   message?: string
   error?: string
+  detail?: string
   link?: string
   url?: string
   permalink?: string
@@ -26,6 +27,7 @@ type WordpressExportResponse = {
   data: string
   message?: string
   error?: string
+  detail?: string
 }
 
 type WordpressSubscriptionsResponse = {
@@ -36,6 +38,74 @@ type WordpressSubscriptionsResponse = {
   html?: string
   message?: string
   error?: string
+  detail?: string
+}
+
+type JsonObject = Record<string, unknown>
+
+function isJsonObject(value: unknown): value is JsonObject {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isConvertResponse(data: unknown): data is ConvertResponse {
+  return (
+    isJsonObject(data) &&
+    typeof data.markdown === 'string' &&
+    typeof data.html === 'string' &&
+    typeof data.engine === 'string' &&
+    typeof data.stats === 'object' &&
+    data.stats !== null
+  )
+}
+
+function pickBackendMessage(payload: unknown): string | undefined {
+  if (typeof payload === 'string') {
+    const trimmed = payload.trim()
+    return trimmed ? trimmed : undefined
+  }
+
+  if (isJsonObject(payload)) {
+    for (const key of ['message', 'error', 'detail']) {
+      const candidate = payload[key]
+      if (typeof candidate === 'string') {
+        const trimmed = candidate.trim()
+        if (trimmed) return trimmed
+      }
+    }
+  }
+
+  return undefined
+}
+
+async function readJsonPayload(res: Response): Promise<{ data: unknown; raw: string }> {
+  const raw = await res.text()
+  if (!raw) {
+    return { data: null, raw: '' }
+  }
+
+  try {
+    return { data: JSON.parse(raw) as unknown, raw }
+  } catch {
+    return { data: null, raw }
+  }
+}
+
+function normaliseErrorMessage(
+  payload: unknown,
+  raw: string,
+  fallback: string,
+): string {
+  return pickBackendMessage(payload) || raw.trim() || fallback
+}
+
+function resolveUnknownError(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message) {
+    return error.message
+  }
+  if (typeof error === 'string' && error.trim()) {
+    return error.trim()
+  }
+  return fallback
 }
 
 function extractTitle(markdown: string) {
@@ -136,23 +206,36 @@ export default function App() {
   }
 
   async function handleFileInput(file: File) {
-    setBusy(true); setError('')
+    setBusy(true)
+    setError('')
     try {
       const form = new FormData()
       form.append('file', file)
+
       const res = await fetch(`${backend}/convert`, { method: 'POST', body: form })
-      if (!res.ok) throw new Error(await res.text())
-      const data = await res.json() as ConvertResponse
-      setMd(data.markdown); setHtml(data.html); setEngine(data.engine); setTab('md')
+      const { data, raw } = await readJsonPayload(res)
+
+      if (!res.ok || !isConvertResponse(data)) {
+        const message = normaliseErrorMessage(data, raw, 'Erreur de conversion')
+        throw new Error(message)
+      }
+
+      setMd(data.markdown)
+      setHtml(data.html)
+      setEngine(data.engine)
+      setTab('md')
+
       const detectedTitle = extractTitle(data.markdown)
       setPostTitle(detectedTitle)
       setPublishMessage('')
       setPublishError('')
       setSlugTouched(false)
       setPostSlug(detectedTitle ? slugify(detectedTitle) : '')
-    } catch (e: any) {
-      setError(e?.message || 'Erreur de conversion')
-    } finally { setBusy(false) }
+    } catch (error) {
+      setError(resolveUnknownError(error, 'Erreur de conversion'))
+    } finally {
+      setBusy(false)
+    }
   }
 
   function onChoose(ev: React.ChangeEvent<HTMLInputElement>) {
@@ -162,7 +245,12 @@ export default function App() {
 
   async function copyCurrent() {
     const text = tab === 'md' ? md : html
-    try { await navigator.clipboard.writeText(text); alert('Copié !') } catch {}
+    try {
+      await navigator.clipboard.writeText(text)
+      window.alert('Copié !')
+    } catch (error) {
+      console.error('Impossible de copier le contenu', error)
+    }
   }
 
   function downloadMd() {
@@ -211,19 +299,18 @@ export default function App() {
         body: JSON.stringify(payload),
       })
 
-      let data: WordpressResponse | null = null
-      try {
-        data = await res.json()
-      } catch {}
+      const { data, raw } = await readJsonPayload(res)
+      const parsed = isJsonObject(data) ? (data as WordpressResponse) : null
 
-      if (!res.ok || data?.success === false) {
-        throw new Error(data?.message || data?.error || 'Connexion échouée')
+      if (!res.ok || parsed?.success === false) {
+        const message = normaliseErrorMessage(parsed, raw, 'Connexion échouée')
+        throw new Error(message)
       }
 
       setWpConnected(true)
-      setWpMessage(data?.message || 'Connexion à WordPress réussie.')
-    } catch (e: any) {
-      setWpError(e?.message || 'Impossible de se connecter à WordPress.')
+      setWpMessage(parsed?.message || 'Connexion à WordPress réussie.')
+    } catch (error) {
+      setWpError(resolveUnknownError(error, 'Impossible de se connecter à WordPress.'))
     } finally {
       setWpTesting(false)
     }
@@ -264,24 +351,23 @@ export default function App() {
         body: JSON.stringify(payload),
       })
 
-      let data: WordpressResponse | null = null
-      try {
-        data = await res.json()
-      } catch {}
+      const { data, raw } = await readJsonPayload(res)
+      const parsed = isJsonObject(data) ? (data as WordpressResponse) : null
 
-      if (!res.ok || data?.success === false) {
-        throw new Error(data?.message || data?.error || 'Publication échouée')
+      if (!res.ok || parsed?.success === false) {
+        const message = normaliseErrorMessage(parsed, raw, 'Publication échouée')
+        throw new Error(message)
       }
 
-      const link = data?.link || data?.url || data?.permalink
+      const link = parsed?.link || parsed?.url || parsed?.permalink
       if (link) {
         setPublishMessage(`Article publié : ${link}`)
       } else {
-        const message = data?.message || 'Article publié avec succès sur WordPress.'
+        const message = parsed?.message || 'Article publié avec succès sur WordPress.'
         setPublishMessage(message)
       }
-    } catch (e: any) {
-      setPublishError(e?.message || 'Impossible de publier sur WordPress.')
+    } catch (error) {
+      setPublishError(resolveUnknownError(error, 'Impossible de publier sur WordPress.'))
     } finally {
       setPublishBusy(false)
     }
@@ -306,21 +392,20 @@ export default function App() {
         body: JSON.stringify(payload),
       })
 
-      let data: WordpressExportResponse | null = null
-      try {
-        data = await res.json()
-      } catch {}
+      const { data, raw } = await readJsonPayload(res)
+      const parsed = isJsonObject(data) ? (data as WordpressExportResponse) : null
 
-      if (!res.ok || !data || !data.data) {
-        throw new Error(data?.message || data?.error || 'Export échoué')
+      if (!res.ok || !parsed || !parsed.data) {
+        const message = normaliseErrorMessage(parsed, raw, 'Export échoué')
+        throw new Error(message)
       }
 
-      const filename = data.filename || 'woocommerce-subscriptions.csv'
-      const contentType = data.contentType || 'text/csv'
-      downloadBase64File(data.data, filename, contentType)
+      const filename = parsed.filename || 'woocommerce-subscriptions.csv'
+      const contentType = parsed.contentType || 'text/csv'
+      downloadBase64File(parsed.data, filename, contentType)
       setExportMessage(`Export téléchargé : ${filename}`)
-    } catch (e: any) {
-      setExportError(e?.message || 'Impossible d\'exporter les abonnements WooCommerce.')
+    } catch (error) {
+      setExportError(resolveUnknownError(error, 'Impossible d\'exporter les abonnements WooCommerce.'))
     } finally {
       setExportBusy(false)
     }
@@ -352,17 +437,16 @@ export default function App() {
         }),
       })
 
-      let data: WordpressSubscriptionsResponse | null = null
-      try {
-        data = await res.json()
-      } catch {}
+      const { data, raw } = await readJsonPayload(res)
+      const parsed = isJsonObject(data) ? (data as WordpressSubscriptionsResponse) : null
 
-      if (!res.ok || !data) {
-        throw new Error(data?.message || data?.error || 'Récupération échouée')
+      if (!res.ok || !parsed) {
+        const message = normaliseErrorMessage(parsed, raw, 'Récupération échouée')
+        throw new Error(message)
       }
 
-      const base = data.base_url || data.baseUrl || normalisedWpUrl
-      const adminPath = data.admin_path || data.adminPath
+      const base = parsed.base_url || parsed.baseUrl || normalisedWpUrl
+      const adminPath = parsed.admin_path || parsed.adminPath
       let targetUrl = base
       if (adminPath) {
         try {
@@ -373,10 +457,10 @@ export default function App() {
         }
       }
       setSubscriptionsUrl(targetUrl)
-      setSubscriptionsHtml(data.html || '')
+      setSubscriptionsHtml(parsed.html || '')
       setSubscriptionsMessage('Page d\'abonnements récupérée avec succès.')
-    } catch (e: any) {
-      setSubscriptionsError(e?.message || 'Impossible de récupérer la page des abonnements WooCommerce.')
+    } catch (error) {
+      setSubscriptionsError(resolveUnknownError(error, 'Impossible de récupérer la page des abonnements WooCommerce.'))
     } finally {
       setSubscriptionsBusy(false)
     }
