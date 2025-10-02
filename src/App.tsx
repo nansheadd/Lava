@@ -1,5 +1,9 @@
 import React, { useEffect, useState } from 'react'
 
+/* =========================
+   Types de réponses backend
+   ========================= */
+
 type ConvertResponse = {
   markdown: string
   html: string
@@ -43,6 +47,10 @@ type WordpressSubscriptionsResponse = {
 
 type JsonObject = Record<string, unknown>
 
+/* ===============
+   Utilitaires TS
+   =============== */
+
 function isJsonObject(value: unknown): value is JsonObject {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -63,7 +71,6 @@ function pickBackendMessage(payload: unknown): string | undefined {
     const trimmed = payload.trim()
     return trimmed ? trimmed : undefined
   }
-
   if (isJsonObject(payload)) {
     for (const key of ['message', 'error', 'detail']) {
       const candidate = payload[key]
@@ -73,16 +80,12 @@ function pickBackendMessage(payload: unknown): string | undefined {
       }
     }
   }
-
   return undefined
 }
 
 async function readJsonPayload(res: Response): Promise<{ data: unknown; raw: string }> {
   const raw = await res.text()
-  if (!raw) {
-    return { data: null, raw: '' }
-  }
-
+  if (!raw) return { data: null, raw: '' }
   try {
     return { data: JSON.parse(raw) as unknown, raw }
   } catch {
@@ -90,21 +93,13 @@ async function readJsonPayload(res: Response): Promise<{ data: unknown; raw: str
   }
 }
 
-function normaliseErrorMessage(
-  payload: unknown,
-  raw: string,
-  fallback: string,
-): string {
+function normaliseErrorMessage(payload: unknown, raw: string, fallback: string): string {
   return pickBackendMessage(payload) || raw.trim() || fallback
 }
 
 function resolveUnknownError(error: unknown, fallback: string): string {
-  if (error instanceof Error && error.message) {
-    return error.message
-  }
-  if (typeof error === 'string' && error.trim()) {
-    return error.trim()
-  }
+  if (error instanceof Error && error.message) return error.message
+  if (typeof error === 'string' && error.trim()) return error.trim()
   return fallback
 }
 
@@ -129,17 +124,24 @@ function slugify(value: string) {
     .replace(/^-|-$/g, '')
 }
 
+/* =================
+   Composant principal
+   ================= */
+
 export default function App() {
+  // Conversion DOCX -> MD/HTML
   const [md, setMd] = useState('')
   const [html, setHtml] = useState('')
   const [engine, setEngine] = useState('')
   const [busy, setBusy] = useState(false)
   const [tab, setTab] = useState<'md'|'html'>('md')
   const [error, setError] = useState('')
+
+  // Connexion & publication WP
   const [wpUrl, setWpUrl] = useState('')
   const [wpUsername, setWpUsername] = useState('')
-  const [wpAppPassword, setWpAppPassword] = useState('')
-  const [wpAdminPassword, setWpAdminPassword] = useState('')
+  const [wpAppPassword, setWpAppPassword] = useState('')      // pour /wordpress/connect & publish
+  const [wpAdminPassword, setWpAdminPassword] = useState('')  // pour Selenium export
   const [wpTesting, setWpTesting] = useState(false)
   const [wpConnected, setWpConnected] = useState(false)
   const [wpMessage, setWpMessage] = useState('')
@@ -151,18 +153,29 @@ export default function App() {
   const [publishMessage, setPublishMessage] = useState('')
   const [publishError, setPublishError] = useState('')
   const [slugTouched, setSlugTouched] = useState(false)
+
+  // Export Woo (via WebSocket)
   const [exportBusy, setExportBusy] = useState(false)
   const [exportMessage, setExportMessage] = useState('')
   const [exportError, setExportError] = useState('')
+  const [exportLogs, setExportLogs] = useState<string[]>([])
+  const [exportProgress, setExportProgress] = useState<number>(0)
+  const [wsRef, setWsRef] = useState<WebSocket | null>(null)
+
+  // Aperçu abonnements (optionnel si backend le propose)
   const [subscriptionsBusy, setSubscriptionsBusy] = useState(false)
   const [subscriptionsMessage, setSubscriptionsMessage] = useState('')
   const [subscriptionsError, setSubscriptionsError] = useState('')
   const [subscriptionsUrl, setSubscriptionsUrl] = useState('')
   const [subscriptionsHtml, setSubscriptionsHtml] = useState('')
 
+  // Backend URL
   const backend = import.meta.env.VITE_API_URL || 'http://localhost:8000'
-
   const normalisedWpUrl = wpUrl.trim()
+
+  /* ======================
+     Helpers front communs
+     ====================== */
 
   function buildWordpressApiPayload() {
     const password = wpAppPassword || wpAdminPassword
@@ -205,6 +218,24 @@ export default function App() {
     URL.revokeObjectURL(link.href)
   }
 
+  function toWsUrl(httpBase: string, path: string) {
+    const u = new URL(httpBase)
+    u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:'
+    let p = path.startsWith('/') ? path : '/' + path
+    // Si backend a un pathname (reverse proxy), on le conserve
+    const basePath = u.pathname.endsWith('/') ? u.pathname.slice(0, -1) : u.pathname
+    u.pathname = `${basePath}${p}`
+    return u.toString()
+  }
+
+  function appendLog(line: string) {
+    setExportLogs(prev => [...prev, line])
+  }
+
+  /* =====================
+     Conversion DOCX → MD
+     ===================== */
+
   async function handleFileInput(file: File) {
     setBusy(true)
     setError('')
@@ -231,8 +262,8 @@ export default function App() {
       setPublishError('')
       setSlugTouched(false)
       setPostSlug(detectedTitle ? slugify(detectedTitle) : '')
-    } catch (error) {
-      setError(resolveUnknownError(error, 'Erreur de conversion'))
+    } catch (err) {
+      setError(resolveUnknownError(err, 'Erreur de conversion'))
     } finally {
       setBusy(false)
     }
@@ -272,11 +303,21 @@ export default function App() {
     setWpError('')
     setExportMessage('')
     setExportError('')
+    setExportLogs([])
+    setExportProgress(0)
     setSubscriptionsMessage('')
     setSubscriptionsError('')
     setSubscriptionsHtml('')
     setSubscriptionsUrl('')
   }, [wpUrl, wpUsername, wpAppPassword, wpAdminPassword])
+
+  useEffect(() => {
+    return () => { try { wsRef?.close() } catch {} }
+  }, [wsRef])
+
+  /* ======================
+     Connexion & Publication
+     ====================== */
 
   async function testWordpressConnection() {
     if (!wpUrl || !wpUsername || (!wpAppPassword && !wpAdminPassword)) {
@@ -342,7 +383,6 @@ export default function App() {
         html,
         content: html,
       }
-
       if (postSlug) payload.slug = postSlug
 
       const res = await fetch(`${backend}/wordpress/publish`, {
@@ -363,8 +403,7 @@ export default function App() {
       if (link) {
         setPublishMessage(`Article publié : ${link}`)
       } else {
-        const message = parsed?.message || 'Article publié avec succès sur WordPress.'
-        setPublishMessage(message)
+        setPublishMessage(parsed?.message || 'Article publié avec succès sur WordPress.')
       }
     } catch (error) {
       setPublishError(resolveUnknownError(error, 'Impossible de publier sur WordPress.'))
@@ -372,6 +411,10 @@ export default function App() {
       setPublishBusy(false)
     }
   }
+
+  /* ===========================
+     Export Woo via WebSocket
+     =========================== */
 
   async function exportSubscriptions() {
     if (!wpUrl || !wpUsername || !wpAdminPassword) {
@@ -383,33 +426,89 @@ export default function App() {
     setExportBusy(true)
     setExportMessage('')
     setExportError('')
+    setExportLogs([])
+    setExportProgress(0)
 
     try {
-      const payload = buildWordpressAdminPayload()
-      const res = await fetch(`${backend}/wordpress/subscriptions/export`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      })
+      const wsUrl = toWsUrl(backend, '/ws/wordpress/subscriptions/export')
+      const ws = new WebSocket(wsUrl)
+      setWsRef(ws)
 
-      const { data, raw } = await readJsonPayload(res)
-      const parsed = isJsonObject(data) ? (data as WordpressExportResponse) : null
-
-      if (!res.ok || !parsed || !parsed.data) {
-        const message = normaliseErrorMessage(parsed, raw, 'Export échoué')
-        throw new Error(message)
+      ws.onopen = () => {
+        appendLog('✅ Connecté au serveur, démarrage de l’export…')
+        ws.send(JSON.stringify({
+          baseUrl: normalisedWpUrl,
+          username: wpUsername,
+          password: wpAdminPassword,
+          browser: 'chrome', // ou 'chrome'
+          headless: true
+        }))
       }
 
-      const filename = parsed.filename || 'woocommerce-subscriptions.csv'
-      const contentType = parsed.contentType || 'text/csv'
-      downloadBase64File(parsed.data, filename, contentType)
-      setExportMessage(`Export téléchargé : ${filename}`)
-    } catch (error) {
-      setExportError(resolveUnknownError(error, 'Impossible d\'exporter les abonnements WooCommerce.'))
-    } finally {
+      ws.onmessage = (ev) => {
+        let msg: any = null
+        try { msg = JSON.parse(ev.data) } catch { /* texte brut éventuel */ }
+
+        if (msg && typeof msg === 'object') {
+          if (msg.type === 'progress' || msg.type === 'step') {
+            if (typeof msg.message === 'string' && msg.message.trim()) {
+              appendLog(`• ${msg.message}`)
+            }
+            if (typeof msg.pct === 'number') {
+              setExportProgress(Math.max(0, Math.min(100, msg.pct)))
+            }
+            return
+          }
+          if (msg.type === 'error') {
+            setExportError(typeof msg.message === 'string' ? msg.message : 'Erreur pendant l’export.')
+            appendLog('❌ ' + (msg.message || 'Erreur'))
+            setExportBusy(false)
+            try { ws.close() } catch {}
+            return
+          }
+          if (msg.type === 'done') {
+            const filename = msg.filename || 'woocommerce-subscriptions.csv'
+            const contentType = msg.contentType || 'text/csv'
+            if (typeof msg.data === 'string' && msg.data) {
+              downloadBase64File(msg.data, filename, contentType)
+              setExportMessage(`Export téléchargé : ${filename}`)
+              appendLog('✅ Export terminé et téléchargé.')
+            } else {
+              setExportError('Réponse finale invalide (pas de données).')
+              appendLog('❌ Réponse finale invalide.')
+            }
+            setExportProgress(100)
+            setExportBusy(false)
+            try { ws.close() } catch {}
+            return
+          }
+        }
+
+        if (typeof ev.data === 'string' && ev.data.trim()) {
+          appendLog(ev.data.trim())
+        }
+      }
+
+      ws.onerror = () => {
+        appendLog('❌ WebSocket error')
+        setExportError('Erreur de communication WebSocket.')
+        setExportBusy(false)
+        try { ws.close() } catch {}
+      }
+
+      ws.onclose = () => {
+        appendLog('ℹ️ Connexion WebSocket fermée.')
+      }
+
+    } catch (err) {
+      setExportError(resolveUnknownError(err, 'Impossible de démarrer l’export en WebSocket.'))
       setExportBusy(false)
     }
   }
+
+  /* ===========================
+     Aperçu page abonnements (optionnel si route HTTP dispo)
+     =========================== */
 
   async function fetchSubscriptionsPreview() {
     if (!wpUrl || !wpUsername || !wpAdminPassword) {
@@ -466,6 +565,10 @@ export default function App() {
     }
   }
 
+  /* ==========
+     Rendu UI
+     ========== */
+
   return (
     <>
       <header className="header">
@@ -477,6 +580,7 @@ export default function App() {
       </header>
 
       <main className="container">
+        {/* Conversion */}
         <div className="card">
           <p style={{marginTop:0}}>Transformez un <code>.docx</code> en Markdown + HTML pour WordPress.</p>
           {engine && <p style={{opacity:.7, marginTop: '-8px'}}>Moteur utilisé : <strong>{engine}</strong></p>}
@@ -497,6 +601,7 @@ export default function App() {
           )}
         </div>
 
+        {/* Connexion & Publication */}
         <div className="card" style={{marginTop: 24}}>
           <h2 className="section-title">Connexion &amp; publication WordPress</h2>
           <p style={{marginTop:0}}>Renseignez votre site WordPress puis publiez directement le contenu converti.</p>
@@ -559,53 +664,14 @@ export default function App() {
 
           <hr className="divider" />
 
-          <div className="form-grid">
-            <label className="field">
-              <span>Titre de l&apos;article</span>
-              <input
-                type="text"
-                placeholder="Titre de l'article"
-                value={postTitle}
-                onChange={(e) => setPostTitle(e.target.value)}
-              />
-            </label>
-            <label className="field">
-              <span>Slug (optionnel)</span>
-              <input
-                type="text"
-                placeholder="titre-de-l-article"
-                value={postSlug}
-                onChange={(e) => {
-                  setPostSlug(e.target.value)
-                  setSlugTouched(true)
-                }}
-              />
-            </label>
-            <label className="field">
-              <span>Statut WordPress</span>
-              <select value={postStatus} onChange={(e) => setPostStatus(e.target.value as 'draft' | 'publish')}>
-                <option value="draft">Brouillon</option>
-                <option value="publish">Publié</option>
-              </select>
-            </label>
-          </div>
-
-          <button
-            className="button"
-            onClick={publishToWordpress}
-            disabled={publishBusy}
-            style={{marginTop: 16}}
-          >
-            {publishBusy ? 'Publication…' : 'Publier sur WordPress'}
-          </button>
-
           {publishMessage && <p className="status success" style={{marginTop:12}}>{publishMessage}</p>}
           {publishError && <p className="status error" style={{marginTop:12}}>{publishError}</p>}
 
           <hr className="divider" />
 
+          {/* Export Woo (WebSocket) */}
           <h3 className="section-subtitle">Export des abonnements WooCommerce</h3>
-          <p style={{marginTop:0}}>Téléchargez le CSV des abonnements directement depuis votre site.</p>
+          <p style={{marginTop:0}}>Lancez l’export : progression en direct, CSV téléchargé à la fin.</p>
 
           <button
             className="button outline"
@@ -619,11 +685,31 @@ export default function App() {
           {exportMessage && <p className="status success" style={{marginTop:12}}>{exportMessage}</p>}
           {exportError && <p className="status error" style={{marginTop:12}}>{exportError}</p>}
 
+          {exportBusy && (
+            <div style={{marginTop:12}}>
+              <div style={{height:8, background:'#eee', borderRadius:8, overflow:'hidden'}}>
+                <div style={{width:`${exportProgress}%`, height:'100%', background:'#2563eb', transition:'width .3s'}} />
+              </div>
+              <p style={{marginTop:8, opacity:.8}}>Progression : {Math.round(exportProgress)}%</p>
+            </div>
+          )}
+
+          {exportLogs.length > 0 && (
+            <details open style={{marginTop:12}}>
+              <summary>Journal d’exécution</summary>
+              <pre style={{
+                background:'#0b1020', color:'#e2e8f0', padding:12, borderRadius:8,
+                maxHeight:220, overflow:'auto', fontSize:12, lineHeight:1.4
+              }}>{exportLogs.join('\n')}</pre>
+            </details>
+          )}
+
+          {/* Aperçu abonnements (si route HTTP dispo côté backend) */}
           <button
             className="button outline"
             onClick={fetchSubscriptionsPreview}
             disabled={subscriptionsBusy}
-            style={{marginTop: 12}}
+            style={{marginTop: 24}}
           >
             {subscriptionsBusy ? 'Chargement…' : 'Voir la page des abonnements'}
           </button>
