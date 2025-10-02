@@ -25,15 +25,6 @@ type WordpressResponse = {
   displayName?: string
 }
 
-type WordpressExportResponse = {
-  filename?: string
-  contentType?: string
-  data: string
-  message?: string
-  error?: string
-  detail?: string
-}
-
 type WordpressSubscriptionsResponse = {
   base_url?: string
   baseUrl?: string
@@ -190,17 +181,6 @@ export default function App() {
     }
   }
 
-  function buildWordpressAdminPayload() {
-    return {
-      siteUrl: normalisedWpUrl,
-      url: normalisedWpUrl,
-      baseUrl: normalisedWpUrl,
-      username: wpUsername,
-      user: wpUsername,
-      password: wpAdminPassword || undefined,
-    }
-  }
-
   function downloadBase64File(base64Data: string, filename: string, contentType?: string) {
     const byteCharacters = atob(base64Data)
     const byteNumbers = new Array(byteCharacters.length)
@@ -222,7 +202,6 @@ export default function App() {
     const u = new URL(httpBase)
     u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:'
     let p = path.startsWith('/') ? path : '/' + path
-    // Si backend a un pathname (reverse proxy), on le conserve
     const basePath = u.pathname.endsWith('/') ? u.pathname.slice(0, -1) : u.pathname
     u.pathname = `${basePath}${p}`
     return u.toString()
@@ -440,7 +419,7 @@ export default function App() {
           baseUrl: normalisedWpUrl,
           username: wpUsername,
           password: wpAdminPassword,
-          browser: 'chrome', // ou 'chrome'
+          browser: 'firefox', // backend Fly: Firefox/Gecko
           headless: true
         }))
       }
@@ -663,6 +642,48 @@ export default function App() {
           {wpError && <p className="status error">{wpError}</p>}
 
           <hr className="divider" />
+
+          {/* Publication */}
+          <h3 className="section-subtitle">Publication sur WordPress</h3>
+          <div className="form-grid">
+            <label className="field">
+              <span>Titre de l&apos;article</span>
+              <input
+                type="text"
+                placeholder="Titre de l'article"
+                value={postTitle}
+                onChange={(e) => setPostTitle(e.target.value)}
+              />
+            </label>
+            <label className="field">
+              <span>Slug (optionnel)</span>
+              <input
+                type="text"
+                placeholder="titre-de-l-article"
+                value={postSlug}
+                onChange={(e) => {
+                  setPostSlug(e.target.value)
+                  setSlugTouched(true)
+                }}
+              />
+            </label>
+            <label className="field">
+              <span>Statut WordPress</span>
+              <select value={postStatus} onChange={(e) => setPostStatus(e.target.value as 'draft' | 'publish')}>
+                <option value="draft">Brouillon</option>
+                <option value="publish">Publié</option>
+              </select>
+            </label>
+          </div>
+
+          <button
+            className="button"
+            onClick={publishToWordpress}
+            disabled={publishBusy}
+            style={{marginTop: 16}}
+          >
+            {publishBusy ? 'Publication…' : 'Publier sur WordPress'}
+          </button>
 
           {publishMessage && <p className="status success" style={{marginTop:12}}>{publishMessage}</p>}
           {publishError && <p className="status error" style={{marginTop:12}}>{publishError}</p>}
