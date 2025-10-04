@@ -419,7 +419,8 @@ export default function App() {
           baseUrl: normalisedWpUrl,
           username: wpUsername,
           password: wpAdminPassword,
-          browser: 'firefox', // backend Fly: Firefox/Gecko
+          browser: 'chrome',
+          fallbackBrowsers: ['firefox'],
           headless: true
         }))
       }
