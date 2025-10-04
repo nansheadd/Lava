@@ -642,52 +642,7 @@ export default function App() {
           {wpMessage && <p className="status success">{wpMessage}</p>}
           {wpError && <p className="status error">{wpError}</p>}
 
-          <hr className="divider" />
-
-          {/* Publication */}
-          <h3 className="section-subtitle">Publication sur WordPress</h3>
-          <div className="form-grid">
-            <label className="field">
-              <span>Titre de l&apos;article</span>
-              <input
-                type="text"
-                placeholder="Titre de l'article"
-                value={postTitle}
-                onChange={(e) => setPostTitle(e.target.value)}
-              />
-            </label>
-            <label className="field">
-              <span>Slug (optionnel)</span>
-              <input
-                type="text"
-                placeholder="titre-de-l-article"
-                value={postSlug}
-                onChange={(e) => {
-                  setPostSlug(e.target.value)
-                  setSlugTouched(true)
-                }}
-              />
-            </label>
-            <label className="field">
-              <span>Statut WordPress</span>
-              <select value={postStatus} onChange={(e) => setPostStatus(e.target.value as 'draft' | 'publish')}>
-                <option value="draft">Brouillon</option>
-                <option value="publish">Publié</option>
-              </select>
-            </label>
-          </div>
-
-          <button
-            className="button"
-            onClick={publishToWordpress}
-            disabled={publishBusy}
-            style={{marginTop: 16}}
-          >
-            {publishBusy ? 'Publication…' : 'Publier sur WordPress'}
-          </button>
-
-          {publishMessage && <p className="status success" style={{marginTop:12}}>{publishMessage}</p>}
-          {publishError && <p className="status error" style={{marginTop:12}}>{publishError}</p>}
+         
 
           <hr className="divider" />
 
