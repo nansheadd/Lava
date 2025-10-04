@@ -7,12 +7,12 @@ const reactRefreshCompatibility = (): PluginOption => ({
   apply: 'serve',
   enforce: 'post',
   transform(code, id) {
-    if (!id.includes('/@react-refresh')) return null
+    if (!id.includes('@react-refresh')) return null
 
-    if (!code.includes('exports.injectIntoGlobalHook')) return null
+    if (!code.includes('injectIntoGlobalHook')) return null
 
     return {
-      code: `${code}\nexport const injectIntoGlobalHook = exports.injectIntoGlobalHook;\n`,
+      code: `${code}\nexport const injectIntoGlobalHook = exports.injectIntoGlobalHook ?? exports.default?.injectIntoGlobalHook;\n`,
       map: null
     }
   }
