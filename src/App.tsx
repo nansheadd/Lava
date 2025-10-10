@@ -845,7 +845,7 @@ export default function App() {
     </div>
   )
 
-  let mainContent: JSX.Element
+  let mainContent: React.ReactNode
   switch (selectedTool) {
     case 'wordpress':
       mainContent = wordpressContent
