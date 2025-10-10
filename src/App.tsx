@@ -256,7 +256,7 @@ export default function App() {
       setHtml(data.html)
       setEngine(data.engine)
       setNotesMap(data.notes ?? {})
-      setSupernoteApplied(false)
+      setSupernoteApplied(true)
       setTab('md')
       setSelectedTool('converter')
 
