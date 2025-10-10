@@ -10,6 +10,7 @@ type ConvertResponse = {
   html: string
   engine: string
   stats: Record<string, unknown>
+  notes?: Record<string, string>
 }
 
 type WordpressResponse = {
@@ -48,13 +49,19 @@ function isJsonObject(value: unknown): value is JsonObject {
 }
 
 function isConvertResponse(data: unknown): data is ConvertResponse {
+  const notes = (data as { notes?: unknown }).notes
+  const notesValid =
+    notes === undefined ||
+    (isJsonObject(notes) && Object.values(notes as Record<string, unknown>).every((value) => typeof value === 'string'))
+
   return (
     isJsonObject(data) &&
     typeof data.markdown === 'string' &&
     typeof data.html === 'string' &&
     typeof data.engine === 'string' &&
     typeof data.stats === 'object' &&
-    data.stats !== null
+    data.stats !== null &&
+    notesValid
   )
 }
 
@@ -95,6 +102,10 @@ function resolveUnknownError(error: unknown, fallback: string): string {
   return fallback
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
 function extractTitle(markdown: string) {
   const lines = markdown.split(/\r?\n/)
   for (const line of lines) {
@@ -125,9 +136,13 @@ export default function App() {
   const [md, setMd] = useState('')
   const [html, setHtml] = useState('')
   const [engine, setEngine] = useState('')
+  const [notesMap, setNotesMap] = useState<Record<string, string>>({})
   const [busy, setBusy] = useState(false)
   const [tab, setTab] = useState<'md'|'html'>('md')
   const [error, setError] = useState('')
+  const [supernoteApplied, setSupernoteApplied] = useState(false)
+  const [selectedTool, setSelectedTool] = useState<'converter' | 'wordpress' | 'kanbanVitrine' | 'kanbanTickets'>('converter')
+  const [sidebarOpen, setSidebarOpen] = useState(true)
 
   // Connexion & publication WP
   const [wpUrl, setWpUrl] = useState('')
@@ -164,6 +179,12 @@ export default function App() {
   // Backend URL
   const backend = import.meta.env.VITE_API_URL || 'http://localhost:8000'
   const normalisedWpUrl = wpUrl.trim()
+  const tools = [
+    { id: 'converter' as const, label: 'Convertisseur DOCX' },
+    { id: 'wordpress' as const, label: 'Outils WordPress' },
+    { id: 'kanbanVitrine' as const, label: 'Kanban vitrine' },
+    { id: 'kanbanTickets' as const, label: 'Kanban Lava Tickets' },
+  ]
 
   /* ======================
      Helpers front communs
@@ -234,7 +255,10 @@ export default function App() {
       setMd(data.markdown)
       setHtml(data.html)
       setEngine(data.engine)
+      setNotesMap(data.notes ?? {})
+      setSupernoteApplied(false)
       setTab('md')
+      setSelectedTool('converter')
 
       const detectedTitle = extractTitle(data.markdown)
       setPostTitle(detectedTitle)
@@ -269,6 +293,63 @@ export default function App() {
     const a = document.createElement('a')
     a.href = URL.createObjectURL(blob); a.download = 'article.md'; a.click()
     URL.revokeObjectURL(a.href)
+  }
+
+  function transformHtmlWithSupernotes(sourceHtml: string, mapping: Record<string, string>): string {
+    if (!sourceHtml || Object.keys(mapping).length === 0) return sourceHtml
+    if (typeof DOMParser === 'undefined') return sourceHtml
+    try {
+      const parser = new DOMParser()
+      const parsed = parser.parseFromString(`<div>${sourceHtml}</div>`, 'text/html')
+      const container = parsed.body.firstElementChild as HTMLElement | null
+      if (!container) return sourceHtml
+      const zeroWidth = '\u200B'
+      container.querySelectorAll('sup.lava-note-ref').forEach((node) => {
+        const sup = node as HTMLElement
+        const noteId = sup.getAttribute('data-note-id') || ''
+        const rawNote = mapping[noteId]
+        if (!noteId || !rawNote) return
+        const holder = parsed.createElement('span')
+        holder.innerHTML = rawNote
+        const fragment = parsed.createDocumentFragment()
+        fragment.append(parsed.createTextNode(`[${zeroWidth}note]`))
+        Array.from(holder.childNodes).forEach((child) => fragment.append(child))
+        fragment.append(parsed.createTextNode(`[${zeroWidth}/note]`))
+        sup.replaceWith(fragment)
+      })
+      return container.innerHTML
+    } catch {
+      return sourceHtml
+    }
+  }
+
+  function transformMarkdownWithSupernotes(sourceMd: string, mapping: Record<string, string>): string {
+    if (!sourceMd || Object.keys(mapping).length === 0) return sourceMd
+    if (typeof document === 'undefined') return sourceMd
+    const zeroWidth = '\u200B'
+    const scratch = document.createElement('div')
+    const entries = Object.entries(mapping).sort((a, b) => Number(a[0]) - Number(b[0]))
+    let output = sourceMd
+    for (const [noteId, rawNote] of entries) {
+      scratch.innerHTML = rawNote
+      const plain = (scratch.textContent || scratch.innerText || rawNote).trim()
+      scratch.innerHTML = ''
+      if (!plain) continue
+      const pattern = new RegExp(`\\[${escapeRegExp(noteId)}\\]`, 'g')
+      const replacement = `[${zeroWidth}note]${plain}[${zeroWidth}/note]`
+      output = output.replace(pattern, replacement)
+    }
+    return output
+  }
+
+  function applySupernote() {
+    if (supernoteApplied) return
+    if (Object.keys(notesMap).length === 0) return
+    const updatedHtml = transformHtmlWithSupernotes(html, notesMap)
+    const updatedMd = transformMarkdownWithSupernotes(md, notesMap)
+    setHtml(updatedHtml)
+    setMd(updatedMd)
+    setSupernoteApplied(true)
   }
 
   useEffect(() => {
@@ -550,218 +631,297 @@ export default function App() {
      Rendu UI
      ========== */
 
-  return (
-    <>
-      <header className="header">
-        <div className="brand">Lava<span className="dot">●</span>Tools</div>
-        <label className="button" style={{cursor: busy ? 'not-allowed' : 'pointer'}}>
-          {busy ? 'Conversion…' : 'Importer .docx'}
-          <input type="file" accept=".docx" style={{display:'none'}} onChange={onChoose} disabled={busy} />
+  const canApplySupernote = Object.keys(notesMap).length > 0 && !supernoteApplied
+
+  const converterContent = (
+    <div className="card">
+      <p style={{marginTop:0}}>Transformez un <code>.docx</code> en Markdown + HTML pour WordPress.</p>
+      {engine && <p style={{opacity:.7, marginTop: '-8px'}}>Moteur utilisé : <strong>{engine}</strong></p>}
+      {error && <p style={{color:'#b91c1c'}}>{error}</p>}
+
+      <div className="tabs">
+        <button className={`tab ${tab==='md'?'active':''}`} onClick={()=>setTab('md')}>Markdown</button>
+        <button className={`tab ${tab==='html'?'active':''}`} onClick={()=>setTab('html')}>HTML</button>
+        <button
+          className="button"
+          onClick={applySupernote}
+          disabled={!canApplySupernote}
+          title={canApplySupernote ? 'Remplacer les références [1] par du texte [note]...' : 'Aucune note à convertir'}>
+          Supernote
+        </button>
+        <button className="button" onClick={copyCurrent} style={{marginLeft:'auto'}}>Copier</button>
+        <button className="button" onClick={downloadMd}>Télécharger .md</button>
+      </div>
+
+      {tab==='md' ? (
+        <textarea value={md} onChange={(e)=>setMd(e.target.value)} spellCheck={false}/>
+      ) : (
+        <div style={{border:'1px solid #e5e7eb', borderRadius:12, padding:12, minHeight:300}}
+             dangerouslySetInnerHTML={{__html: html}} />
+      )}
+    </div>
+  )
+
+  const wordpressContent = (
+    <div className="card">
+      <h2 className="section-title">Connexion &amp; publication WordPress</h2>
+      <p style={{marginTop:0}}>Renseignez votre site WordPress puis publiez directement le contenu converti.</p>
+
+      <div className="form-grid">
+        <label className="field">
+          <span>URL du site</span>
+          <input
+            type="url"
+            placeholder="https://monsite.com"
+            value={wpUrl}
+            onChange={(e) => setWpUrl(e.target.value)}
+            autoComplete="url"
+          />
         </label>
-      </header>
+        <label className="field">
+          <span>Identifiant</span>
+          <input
+            type="text"
+            placeholder="admin"
+            value={wpUsername}
+            onChange={(e) => setWpUsername(e.target.value)}
+            autoComplete="username"
+          />
+        </label>
+        <label className="field">
+          <span>Application password (API)</span>
+          <input
+            type="password"
+            placeholder="xxxx xxxx xxxx xxxx"
+            value={wpAppPassword}
+            onChange={(e) => setWpAppPassword(e.target.value)}
+            autoComplete="current-password"
+          />
+        </label>
+        <label className="field">
+          <span>Mot de passe admin WordPress</span>
+          <input
+            type="password"
+            placeholder="Mot de passe WordPress"
+            value={wpAdminPassword}
+            onChange={(e) => setWpAdminPassword(e.target.value)}
+            autoComplete="current-password"
+          />
+        </label>
+      </div>
 
-      <main className="container">
-        {/* Conversion */}
-        <div className="card">
-          <p style={{marginTop:0}}>Transformez un <code>.docx</code> en Markdown + HTML pour WordPress.</p>
-          {engine && <p style={{opacity:.7, marginTop: '-8px'}}>Moteur utilisé : <strong>{engine}</strong></p>}
-          {error && <p style={{color:'#b91c1c'}}>{error}</p>}
+      <div className="actions-row">
+        <button
+          className="button outline"
+          onClick={testWordpressConnection}
+          disabled={wpTesting}
+        >
+          {wpTesting ? 'Connexion…' : 'Tester la connexion'}
+        </button>
+        {wpConnected && !wpTesting && <span className="status success">Connecté</span>}
+      </div>
+      {wpMessage && <p className="status success">{wpMessage}</p>}
+      {wpError && <p className="status error">{wpError}</p>}
 
-          <div className="tabs">
-            <button className={`tab ${tab==='md'?'active':''}`} onClick={()=>setTab('md')}>Markdown</button>
-            <button className={`tab ${tab==='html'?'active':''}`} onClick={()=>setTab('html')}>HTML</button>
-            <button className="button" onClick={copyCurrent} style={{marginLeft:'auto'}}>Copier</button>
-            <button className="button" onClick={downloadMd}>Télécharger .md</button>
+      <hr className="divider" />
+
+      <h3 className="section-subtitle">Publication WordPress</h3>
+      <p style={{marginTop:0}}>Ajustez le titre, le slug et publiez directement le contenu converti.</p>
+
+      <div className="form-grid">
+        <label className="field">
+          <span>Titre de l’article</span>
+          <input
+            type="text"
+            value={postTitle}
+            onChange={(e) => setPostTitle(e.target.value)}
+            placeholder="Titre de l’article"
+          />
+        </label>
+        <label className="field">
+          <span>Slug</span>
+          <input
+            type="text"
+            value={postSlug}
+            onChange={(e) => { setPostSlug(e.target.value); setSlugTouched(true) }}
+            placeholder="slug-de-l-article"
+          />
+        </label>
+        <label className="field">
+          <span>Statut</span>
+          <select value={postStatus} onChange={(e) => setPostStatus(e.target.value as 'draft' | 'publish')}>
+            <option value="draft">Brouillon</option>
+            <option value="publish">Publier</option>
+          </select>
+        </label>
+      </div>
+
+      <div className="actions-row" style={{marginTop:16}}>
+        <button className="button" onClick={publishToWordpress} disabled={publishBusy}>
+          {publishBusy ? 'Publication…' : 'Publier sur WordPress'}
+        </button>
+      </div>
+      {publishMessage && <p className="status success" style={{marginTop:12}}>{publishMessage}</p>}
+      {publishError && <p className="status error" style={{marginTop:12}}>{publishError}</p>}
+
+      <hr className="divider" />
+
+      <h3 className="section-subtitle">Export des abonnements WooCommerce</h3>
+      <p style={{marginTop:0}}>Lancez l’export : progression en direct, CSV téléchargé à la fin.</p>
+
+      <button
+        className="button outline"
+        onClick={exportSubscriptions}
+        disabled={exportBusy}
+        style={{marginTop: 12}}
+      >
+        {exportBusy ? 'Export en cours…' : 'Exporter les abonnements'}
+      </button>
+
+      {exportMessage && <p className="status success" style={{marginTop:12}}>{exportMessage}</p>}
+      {exportError && <p className="status error" style={{marginTop:12}}>{exportError}</p>}
+
+      {exportBusy && (
+        <div style={{marginTop:12}}>
+          <div style={{height:8, background:'#eee', borderRadius:8, overflow:'hidden'}}>
+            <div style={{width:`${exportProgress}%`, height:'100%', background:'#2563eb', transition:'width .3s'}} />
           </div>
-
-          {tab==='md' ? (
-            <textarea value={md} onChange={(e)=>setMd(e.target.value)} spellCheck={false}/>
-          ) : (
-            <div style={{border:'1px solid #e5e7eb', borderRadius:12, padding:12, minHeight:300}}
-                 dangerouslySetInnerHTML={{__html: html}} />
-          )}
+          <p style={{marginTop:8, opacity:.8}}>Progression : {Math.round(exportProgress)}%</p>
         </div>
+      )}
 
-        {/* Connexion & Publication */}
-        <div className="card" style={{marginTop: 24}}>
-          <h2 className="section-title">Connexion &amp; publication WordPress</h2>
-          <p style={{marginTop:0}}>Renseignez votre site WordPress puis publiez directement le contenu converti.</p>
+      {exportLogs.length > 0 && (
+        <details open style={{marginTop:12}}>
+          <summary>Journal d’exécution</summary>
+          <pre style={{
+            background:'#0b1020', color:'#e2e8f0', padding:12, borderRadius:8,
+            maxHeight:220, overflow:'auto', fontSize:12, lineHeight:1.4
+          }}>{exportLogs.join('\n')}</pre>
+        </details>
+      )}
 
-          <div className="form-grid">
-            <label className="field">
-              <span>URL du site</span>
-              <input
-                type="url"
-                placeholder="https://monsite.com"
-                value={wpUrl}
-                onChange={(e) => setWpUrl(e.target.value)}
-                autoComplete="url"
-              />
-            </label>
-            <label className="field">
-              <span>Identifiant</span>
-              <input
-                type="text"
-                placeholder="admin"
-                value={wpUsername}
-                onChange={(e) => setWpUsername(e.target.value)}
-                autoComplete="username"
-              />
-            </label>
-            <label className="field">
-              <span>Application password (API)</span>
-              <input
-                type="password"
-                placeholder="xxxx xxxx xxxx xxxx"
-                value={wpAppPassword}
-                onChange={(e) => setWpAppPassword(e.target.value)}
-                autoComplete="current-password"
-              />
-            </label>
-            <label className="field">
-              <span>Mot de passe admin WordPress</span>
-              <input
-                type="password"
-                placeholder="Mot de passe WordPress"
-                value={wpAdminPassword}
-                onChange={(e) => setWpAdminPassword(e.target.value)}
-                autoComplete="current-password"
-              />
-            </label>
+      <button
+        className="button outline"
+        onClick={fetchSubscriptionsPreview}
+        disabled={subscriptionsBusy}
+        style={{marginTop: 24}}
+      >
+        {subscriptionsBusy ? 'Chargement…' : 'Voir la page des abonnements'}
+      </button>
+
+      {subscriptionsMessage && <p className="status success" style={{marginTop:12}}>{subscriptionsMessage}</p>}
+      {subscriptionsError && <p className="status error" style={{marginTop:12}}>{subscriptionsError}</p>}
+
+      {subscriptionsUrl && (
+        <p className="status" style={{marginTop:12}}>
+          <a href={subscriptionsUrl} target="_blank" rel="noreferrer">Ouvrir la page dans WordPress</a>
+        </p>
+      )}
+
+      {subscriptionsHtml && (
+        <details className="subscriptions-preview" style={{marginTop:12}}>
+          <summary>Aperçu HTML de la page</summary>
+          <div dangerouslySetInnerHTML={{ __html: subscriptionsHtml }} />
+        </details>
+      )}
+    </div>
+  )
+
+  const kanbanVitrineContent = (
+    <div className="card">
+      <KanbanBoard
+        title="Kanban vitrine"
+        csvUrl="/csv/kanban_vitrine_M1_shortlist.csv"
+      />
+    </div>
+  )
+
+  const kanbanTicketsContent = (
+    <div className="card">
+      <KanbanBoard
+        title="Kanban Lava Tickets"
+        csvUrl="/csv/kanban_lava_tickets_wp_mapping_with_difficulty.csv"
+      />
+    </div>
+  )
+
+  let mainContent: JSX.Element
+  switch (selectedTool) {
+    case 'wordpress':
+      mainContent = wordpressContent
+      break
+    case 'kanbanVitrine':
+      mainContent = kanbanVitrineContent
+      break
+    case 'kanbanTickets':
+      mainContent = kanbanTicketsContent
+      break
+    case 'converter':
+    default:
+      mainContent = converterContent
+  }
+
+  const activeTool = tools.find(tool => tool.id === selectedTool)
+
+  return (
+    <div className={`app-shell ${sidebarOpen ? 'sidebar-open' : 'sidebar-collapsed'}`}>
+      <aside className={`sidebar ${sidebarOpen ? 'open' : 'collapsed'}`}>
+        <div className="sidebar-header">
+          <div className="sidebar-brand">
+            <span>Lava</span><span className="dot">●</span><span>Tools</span>
           </div>
-
-          <div className="actions-row">
+          <button
+            className="sidebar-toggle"
+            onClick={() => setSidebarOpen((prev) => !prev)}
+            aria-label={sidebarOpen ? 'Réduire le menu' : 'Ouvrir le menu'}
+            type="button"
+          >
+            {sidebarOpen ? '◀' : '▶'}
+          </button>
+        </div>
+        <nav className="sidebar-nav">
+          {tools.map((tool) => (
             <button
-              className="button outline"
-              onClick={testWordpressConnection}
-              disabled={wpTesting}
+              key={tool.id}
+              type="button"
+              onClick={() => setSelectedTool(tool.id)}
+              className={`sidebar-nav-item ${selectedTool === tool.id ? 'active' : ''}`}
+              title={tool.label}
             >
-              {wpTesting ? 'Connexion…' : 'Tester la connexion'}
+              <span className="sidebar-nav-dot">●</span>
+              <span className="sidebar-nav-text">{tool.label}</span>
             </button>
-            {wpConnected && !wpTesting && <span className="status success">Connecté</span>}
-          </div>
-          {wpMessage && <p className="status success">{wpMessage}</p>}
-          {wpError && <p className="status error">{wpError}</p>}
-
-          <hr className="divider" />
-
-          <h3 className="section-subtitle">Publication WordPress</h3>
-          <p style={{marginTop:0}}>Ajustez le titre, le slug et publiez directement le contenu converti.</p>
-
-          <div className="form-grid">
-            <label className="field">
-              <span>Titre de l’article</span>
-              <input
-                type="text"
-                value={postTitle}
-                onChange={(e) => setPostTitle(e.target.value)}
-                placeholder="Titre de l’article"
-              />
-            </label>
-            <label className="field">
-              <span>Slug</span>
-              <input
-                type="text"
-                value={postSlug}
-                onChange={(e) => { setPostSlug(e.target.value); setSlugTouched(true) }}
-                placeholder="slug-de-l-article"
-              />
-            </label>
-            <label className="field">
-              <span>Statut</span>
-              <select value={postStatus} onChange={(e) => setPostStatus(e.target.value as 'draft' | 'publish')}>
-                <option value="draft">Brouillon</option>
-                <option value="publish">Publier</option>
-              </select>
-            </label>
-          </div>
-
-          <div className="actions-row" style={{marginTop:16}}>
-            <button className="button" onClick={publishToWordpress} disabled={publishBusy}>
-              {publishBusy ? 'Publication…' : 'Publier sur WordPress'}
+          ))}
+        </nav>
+      </aside>
+      <div className="app-main">
+        <header className="header">
+          <div className="header-left">
+            <button
+              type="button"
+              className="header-toggle"
+              onClick={() => setSidebarOpen((prev) => !prev)}
+              aria-label={sidebarOpen ? 'Réduire le menu latéral' : 'Déployer le menu latéral'}
+            >
+              {sidebarOpen ? '◀' : '▶'}
             </button>
+            <div className="header-title">{activeTool?.label ?? 'LavaTools'}</div>
           </div>
-          {publishMessage && <p className="status success" style={{marginTop:12}}>{publishMessage}</p>}
-          {publishError && <p className="status error" style={{marginTop:12}}>{publishError}</p>}
-
-          <hr className="divider" />
-
-          {/* Export Woo (WebSocket) */}
-          <h3 className="section-subtitle">Export des abonnements WooCommerce</h3>
-          <p style={{marginTop:0}}>Lancez l’export : progression en direct, CSV téléchargé à la fin.</p>
-
-          <button
-            className="button outline"
-            onClick={exportSubscriptions}
-            disabled={exportBusy}
-            style={{marginTop: 12}}
-          >
-            {exportBusy ? 'Export en cours…' : 'Exporter les abonnements'}
-          </button>
-
-          {exportMessage && <p className="status success" style={{marginTop:12}}>{exportMessage}</p>}
-          {exportError && <p className="status error" style={{marginTop:12}}>{exportError}</p>}
-
-          {exportBusy && (
-            <div style={{marginTop:12}}>
-              <div style={{height:8, background:'#eee', borderRadius:8, overflow:'hidden'}}>
-                <div style={{width:`${exportProgress}%`, height:'100%', background:'#2563eb', transition:'width .3s'}} />
-              </div>
-              <p style={{marginTop:8, opacity:.8}}>Progression : {Math.round(exportProgress)}%</p>
-            </div>
-          )}
-
-          {exportLogs.length > 0 && (
-            <details open style={{marginTop:12}}>
-              <summary>Journal d’exécution</summary>
-              <pre style={{
-                background:'#0b1020', color:'#e2e8f0', padding:12, borderRadius:8,
-                maxHeight:220, overflow:'auto', fontSize:12, lineHeight:1.4
-              }}>{exportLogs.join('\n')}</pre>
-            </details>
-          )}
-
-          {/* Aperçu abonnements (si route HTTP dispo côté backend) */}
-          <button
-            className="button outline"
-            onClick={fetchSubscriptionsPreview}
-            disabled={subscriptionsBusy}
-            style={{marginTop: 24}}
-          >
-            {subscriptionsBusy ? 'Chargement…' : 'Voir la page des abonnements'}
-          </button>
-
-          {subscriptionsMessage && <p className="status success" style={{marginTop:12}}>{subscriptionsMessage}</p>}
-          {subscriptionsError && <p className="status error" style={{marginTop:12}}>{subscriptionsError}</p>}
-
-          {subscriptionsUrl && (
-            <p className="status" style={{marginTop:12}}>
-              <a href={subscriptionsUrl} target="_blank" rel="noreferrer">Ouvrir la page dans WordPress</a>
-            </p>
-          )}
-
-          {subscriptionsHtml && (
-            <details className="subscriptions-preview" style={{marginTop:12}}>
-              <summary>Aperçu HTML de la page</summary>
-              <div dangerouslySetInnerHTML={{ __html: subscriptionsHtml }} />
-            </details>
-          )}
+          <div className="header-actions">
+            {selectedTool === 'converter' && (
+              <label className="button" style={{cursor: busy ? 'not-allowed' : 'pointer', margin:0}}>
+                {busy ? 'Conversion…' : 'Importer .docx'}
+                <input type="file" accept=".docx" style={{display:'none'}} onChange={onChoose} disabled={busy} />
+              </label>
+            )}
+          </div>
+        </header>
+        <div className="main-scroll">
+          <main className="container">
+            {mainContent}
+          </main>
         </div>
-
-        <div className="card" style={{marginTop: 24}}>
-          <KanbanBoard
-            title="Kanban vitrine"
-            csvUrl="/csv/kanban_vitrine_M1_shortlist.csv"
-          />
-        </div>
-
-        <div className="card" style={{marginTop: 24}}>
-          <KanbanBoard
-            title="Kanban Lava Tickets"
-            csvUrl="/csv/kanban_lava_tickets_wp_mapping_with_difficulty.csv"
-          />
-        </div>
-      </main>
-    </>
+      </div>
+    </div>
   )
 }
