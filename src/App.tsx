@@ -140,7 +140,7 @@ export default function App() {
   const [busy, setBusy] = useState(false)
   const [tab, setTab] = useState<'md'|'html'>('md')
   const [error, setError] = useState('')
-  const [supernoteApplied, setSupernoteApplied] = useState(false)
+  const [notesHidden, setNotesHidden] = useState(false)
   const [selectedTool, setSelectedTool] = useState<'converter' | 'wordpress' | 'kanbanVitrine' | 'kanbanTickets'>('converter')
   const [sidebarOpen, setSidebarOpen] = useState(true)
 
@@ -256,7 +256,7 @@ export default function App() {
       setHtml(data.html)
       setEngine(data.engine)
       setNotesMap(data.notes ?? {})
-      setSupernoteApplied(true)
+      setNotesHidden(false)
       setTab('md')
       setSelectedTool('converter')
 
@@ -295,7 +295,7 @@ export default function App() {
     URL.revokeObjectURL(a.href)
   }
 
-  function transformHtmlWithSupernotes(sourceHtml: string, mapping: Record<string, string>): string {
+  function removeFootnotesFromHtml(sourceHtml: string, mapping: Record<string, string>): string {
     if (!sourceHtml || Object.keys(mapping).length === 0) return sourceHtml
     if (typeof DOMParser === 'undefined') return sourceHtml
     try {
@@ -303,53 +303,120 @@ export default function App() {
       const parsed = parser.parseFromString(`<div>${sourceHtml}</div>`, 'text/html')
       const container = parsed.body.firstElementChild as HTMLElement | null
       if (!container) return sourceHtml
-      const zeroWidth = '\u200B'
-      container.querySelectorAll('sup.lava-note-ref').forEach((node) => {
-        const sup = node as HTMLElement
-        const noteId = sup.getAttribute('data-note-id') || ''
-        const rawNote = mapping[noteId]
-        if (!noteId || !rawNote) return
-        const holder = parsed.createElement('span')
-        holder.innerHTML = rawNote
-        const fragment = parsed.createDocumentFragment()
-        fragment.append(parsed.createTextNode(`[${zeroWidth}note]`))
-        Array.from(holder.childNodes).forEach((child) => fragment.append(child))
-        fragment.append(parsed.createTextNode(`[${zeroWidth}/note]`))
-        sup.replaceWith(fragment)
+
+      const selectors = [
+        'sup.lava-note-ref',
+        '[data-note-id]',
+        'a.footnote-ref',
+        'a[role="doc-noteref"]',
+        'section.footnotes',
+        'div.footnotes',
+        'ol.footnotes',
+        'ol[role="doc-endnotes"]',
+        'li[role="doc-endnote"]',
+        'aside.footnotes',
+      ]
+
+      selectors.forEach((selector) => {
+        container.querySelectorAll(selector).forEach((node) => {
+          node.remove()
+        })
       })
+
+      const noteIds = Object.keys(mapping)
+
+      if (noteIds.length > 0) {
+        container.querySelectorAll('p,li').forEach((node) => {
+          const text = (node.textContent || '').trim()
+          if (!text) return
+          for (const noteId of noteIds) {
+            if (
+              text.startsWith(`[${noteId}]`) ||
+              text.startsWith(`${noteId}.`) ||
+              text.startsWith(`${noteId})`) ||
+              text.startsWith(`${noteId} `)
+            ) {
+              node.remove()
+              break
+            }
+          }
+        })
+
+        container.querySelectorAll('a[href]').forEach((node) => {
+          const anchor = node as HTMLAnchorElement
+          const href = anchor.getAttribute('href') || ''
+          if (!href) return
+          for (const noteId of noteIds) {
+            if (
+              href === `#note-${noteId}` ||
+              href === `#fn${noteId}` ||
+              href === `#footnote-${noteId}` ||
+              href.endsWith(`#${noteId}`)
+            ) {
+              anchor.remove()
+              break
+            }
+          }
+        })
+
+        container.querySelectorAll('[id]').forEach((node) => {
+          const el = node as HTMLElement
+          const id = el.getAttribute('id') || ''
+          if (!id) return
+          for (const noteId of noteIds) {
+            if (
+              id === `note-${noteId}` ||
+              id === `fn${noteId}` ||
+              id === `footnote-${noteId}` ||
+              id === `footnote${noteId}`
+            ) {
+              el.remove()
+              break
+            }
+          }
+        })
+      }
+
       return container.innerHTML
     } catch {
       return sourceHtml
     }
   }
 
-  function transformMarkdownWithSupernotes(sourceMd: string, mapping: Record<string, string>): string {
-    if (!sourceMd || Object.keys(mapping).length === 0) return sourceMd
-    if (typeof document === 'undefined') return sourceMd
-    const zeroWidth = '\u200B'
-    const scratch = document.createElement('div')
-    const entries = Object.entries(mapping).sort((a, b) => Number(a[0]) - Number(b[0]))
+  function removeFootnotesFromMarkdown(sourceMd: string, mapping: Record<string, string>): string {
+    if (!sourceMd) return sourceMd
     let output = sourceMd
-    for (const [noteId, rawNote] of entries) {
-      scratch.innerHTML = rawNote
-      const plain = (scratch.textContent || scratch.innerText || rawNote).trim()
-      scratch.innerHTML = ''
-      if (!plain) continue
-      const pattern = new RegExp(`\\[${escapeRegExp(noteId)}\\]`, 'g')
-      const replacement = `[${zeroWidth}note]${plain}[${zeroWidth}/note]`
-      output = output.replace(pattern, replacement)
+    const zeroWidth = '\u200B'
+    const noteBlockPattern = new RegExp(`\\[${zeroWidth}?note](.*?)\\[${zeroWidth}?/note]`, 'gis')
+    output = output.replace(noteBlockPattern, '')
+
+    const noteIds = Object.keys(mapping)
+    if (noteIds.length > 0) {
+      const joined = noteIds.map((id) => escapeRegExp(id)).join('|')
+      if (joined) {
+        const bracketRefPattern = new RegExp(`\\[(?:${joined})\\]`, 'g')
+        output = output.replace(bracketRefPattern, '')
+        const caretRefPattern = new RegExp(`\\[\\^(?:${joined})\\]`, 'g')
+        output = output.replace(caretRefPattern, '')
+        const definitionPattern = new RegExp(`^\\[(?:${joined})\\][^\n]*?(?:\n(?: {4}|\t).*)*`, 'gm')
+        output = output.replace(definitionPattern, '')
+        const caretDefinitionPattern = new RegExp(`^\\[\\^(?:${joined})\\]:[^\n]*?(?:\n(?: {4}|\t).*)*`, 'gm')
+        output = output.replace(caretDefinitionPattern, '')
+      }
     }
-    return output
+
+    output = output.replace(/\n{3,}/g, '\n\n')
+    return output.trimEnd()
   }
 
-  function applySupernote() {
-    if (supernoteApplied) return
+  function hideNotes() {
+    if (notesHidden) return
     if (Object.keys(notesMap).length === 0) return
-    const updatedHtml = transformHtmlWithSupernotes(html, notesMap)
-    const updatedMd = transformMarkdownWithSupernotes(md, notesMap)
+    const updatedHtml = removeFootnotesFromHtml(html, notesMap)
+    const updatedMd = removeFootnotesFromMarkdown(md, notesMap)
     setHtml(updatedHtml)
     setMd(updatedMd)
-    setSupernoteApplied(true)
+    setNotesHidden(true)
   }
 
   useEffect(() => {
@@ -631,7 +698,7 @@ export default function App() {
      Rendu UI
      ========== */
 
-  const canApplySupernote = Object.keys(notesMap).length > 0 && !supernoteApplied
+  const canHideNotes = Object.keys(notesMap).length > 0 && !notesHidden
 
   const converterContent = (
     <div className="card">
@@ -644,10 +711,10 @@ export default function App() {
         <button className={`tab ${tab==='html'?'active':''}`} onClick={()=>setTab('html')}>HTML</button>
         <button
           className="button"
-          onClick={applySupernote}
-          disabled={!canApplySupernote}
-          title={canApplySupernote ? 'Remplacer les références [1] par du texte [note]...' : 'Aucune note à convertir'}>
-          Supernote
+          onClick={hideNotes}
+          disabled={!canHideNotes}
+          title={canHideNotes ? 'Masquer les notes. Les notes de bas de page ne seront pas incluses lors de la copie.' : 'Aucune note à masquer'}>
+          Hide note
         </button>
         <button className="button" onClick={copyCurrent} style={{marginLeft:'auto'}}>Copier</button>
         <button className="button" onClick={downloadMd}>Télécharger .md</button>
