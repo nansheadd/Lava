@@ -180,10 +180,10 @@ export default function App() {
   const backend = import.meta.env.VITE_API_URL || 'http://localhost:8000'
   const normalisedWpUrl = wpUrl.trim()
   const tools = [
-    { id: 'converter' as const, label: 'Convertisseur DOCX' },
-    { id: 'wordpress' as const, label: 'Outils WordPress' },
-    { id: 'kanbanVitrine' as const, label: 'Kanban vitrine' },
-    { id: 'kanbanTickets' as const, label: 'Kanban Lava Tickets' },
+    { id: 'converter' as const, label: 'Convertisseur DOCX', icon: '📝' },
+    { id: 'wordpress' as const, label: 'Outils WordPress', icon: '🔌' },
+    { id: 'kanbanVitrine' as const, label: 'Kanban vitrine', icon: '🪟' },
+    { id: 'kanbanTickets' as const, label: 'Kanban Lava Tickets', icon: '🎫' },
   ]
 
   /* ======================
@@ -955,7 +955,7 @@ export default function App() {
               className={`sidebar-nav-item ${selectedTool === tool.id ? 'active' : ''}`}
               title={tool.label}
             >
-              <span className="sidebar-nav-dot">●</span>
+              <span className="sidebar-nav-icon" aria-hidden="true">{tool.icon}</span>
               <span className="sidebar-nav-text">{tool.label}</span>
             </button>
           ))}
@@ -972,7 +972,12 @@ export default function App() {
             >
               {sidebarOpen ? '◀' : '▶'}
             </button>
-            <div className="header-title">{activeTool?.label ?? 'LavaTools'}</div>
+            <div className="header-title">
+              {activeTool?.icon && (
+                <span className="header-title-icon" aria-hidden="true">{activeTool.icon}</span>
+              )}
+              <span>{activeTool?.label ?? 'LavaTools'}</span>
+            </div>
           </div>
           <div className="header-actions">
             {selectedTool === 'converter' && (
